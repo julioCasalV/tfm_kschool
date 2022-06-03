@@ -25,7 +25,7 @@ class Workflow():
         data = data.select_dtypes(exclude=object).drop('ID', axis = 1)
         return data
         
-    def fit(self, file_data: str, conditions_sample = {'Latitud':0.1,'Longitud':0.1,'m2':0.25},
+    def fit(self, file_data: str, conditions_sample = {'Latitud':0.1,'Longitud':0.1,'m2':0.25,'Tipo':0.1},
             file_factor_list: str = None):
         self.conditions_sample = conditions_sample
         data = pd.read_csv(file_data)
@@ -44,16 +44,16 @@ class Workflow():
             self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(self.data_nr[self.features_column], self.data_nr[self.predict_column], 
                                                                 test_size = 0.3, random_state=42)
             factor_list = {}
-            factor_list['m2'] = [0.5,1]
-            factor_list['Tipo'] = [1]
-            combinations = ranking_factors_combinations(self.X_train, self.X_test, factor_list, conditions_sample, self.y_train)
-            self.factor_dict = combinations[0]
+            factor_list['Latitud'] = [0.1,0.4,1]
+            factor_list['Longitud'] = [0.1,0.4,1]
+            factor_list['m2'] = [0.1,0.4,1]
+            factor_list['Tipo'] = [0.1]
+            self.factor_dict = CV_function(data, 10, conditions_sample, self.features_column,self.predict_column, factor_list)
             self.factor_dict.pop("score")
-        
             for column in self.factor_dict:
                 self.factors_values.loc[column, "weight"] = self.factor_dict[column]
             self.data_nr = normalize(data, self.factors_values)
-            pickle.dump(self.factors_values, open("factors_values", "wb"), protocol=pickle.HIGHEST_PROTOCOL)
+            pickle.dump(self.factors_values, open("factors_values.pyc", "wb"), protocol=pickle.HIGHEST_PROTOCOL)
             
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(self.data_nr[self.features_column], self.data_nr[self.predict_column], 
                                                                 test_size = 0.3, random_state=42)
@@ -62,6 +62,7 @@ class Workflow():
         self.model.fit(self.X_train,self.y_train)
         
     def predict(self, X_test: pd.DataFrame):
+        X_test_orig = X_test.copy()
         X_test = self.etl(X_test)
         X_test = X_test[self.features_column]
         X_test = normalize(X_test, self.factors_values)
@@ -71,8 +72,8 @@ class Workflow():
             score_conditions = calculate_score_item(X_test.iloc[item], self.X_train.iloc[neighbor_list], self.conditions_sample)
             result = self.data_orig.loc[self.X_train.iloc[neighbor_list].index]
             for column in score_conditions:
-                result[f'{column}_in'] = score_conditions[column].astype(int)
-            dict_result[item] = {'item' : X_test.iloc[item], 'results' : result}
+                result[f'{column}_in'] = score_conditions[column]
+            dict_result[item] = {'item' : X_test_orig.iloc[item], 'testigos' : result}
         # Vecinos calculados
         return dict_result
 
@@ -101,7 +102,13 @@ def parse_tipo(conditions: dict):
     return conditions
 
 def calculate_score_item(row: pd.Series, data: pd.DataFrame, conditions: dict):
-    return (data[conditions.keys()] - row[conditions.keys()]).abs() < conditions.values()
+    list_tipo = ['Bajo','Chalet','Piso']
+    result = (data[conditions.keys()] - row[conditions.keys()]).abs() < conditions.values()
+    result = result.astype(int)
+    if 'Piso' in conditions.keys():
+        result['Tipo'] = result[list_tipo].min(axis=1)
+        result = result.drop(list_tipo, axis=1)
+    return result
 
 def calculate_score(row: pd.Series, data: pd.DataFrame, conditions: dict):
     return ((data[conditions.keys()] - row[conditions.keys()]).abs() < conditions.values()).all(axis=1).mean()
@@ -147,3 +154,46 @@ def ranking_factors_combinations(X_train, X_test, factor_list, conditions_sample
         factors_dict["score"] = score
     factors_combinations = sorted(factors_combinations, key=lambda item: item["score"], reverse=True)
     return factors_combinations
+
+def CV_function(data:pd.DataFrame, n:int, conditions:dict, features:list, predict:str, factor_list:dict):
+    
+    dict_params = {}
+    # Calculamos los factores de normalización
+    factors_values = factors_values_initial(data)
+
+    for i in range(n):
+        seed = 10*i
+        # Conjunto de entrenamiento en la validación cruzada, variando la semilla garantizamos que varíe en cada iteración
+        data_train = data.sample(frac=0.7,random_state=seed)
+        # Conjunto de testeo en la validación cruzada
+        data_test = data.drop(data_train.index)
+        
+        # Normalizamos los factores de normalización en dicha iteración (ambos datasets con los valores del entrenamiento)
+        data_train_nr = normalize(data_train, factors_values)
+        data_test_nr = normalize(data_test, factors_values)
+
+        # Determinamos X e y con las variables pasadas en la función
+        X_train = data_train_nr[features]
+        y_train = data_train_nr[predict]
+        X_test = data_test_nr[features]
+        y_test = data_test_nr[predict]
+        
+        # Calculamos las combinaciones de parámetros y su score según las condiciones que se hayan determinado por el tasador
+        combinations = ranking_factors_combinations(X_train, X_test, factor_list, conditions, y_train)
+        
+        # Guardamos los resultados de las combinaciones para dicha iteración
+        print("Terminada iteración {} de {} totales en CV".format(i+1,n))
+        
+        dict_params[i] = {"seed": seed, "combinations": combinations, "normalizations" : factors_values}
+    
+    # Buscamos el mejor resultado, siendo este el que tenga mejor promedio
+    combinations_list = []
+    for item in dict_params:
+        for comb in dict_params[item]["combinations"]:
+            combinations_list.append(comb)
+    df = pd.DataFrame.from_records(combinations_list)
+    df_mean = df.groupby(list(df.drop("score", axis=1).columns)).mean().sort_values("score", ascending=False)
+    dict_best_params = df_mean.reset_index().iloc[0].to_dict()
+    print(f'La mejor combinación de factores es: {dict_best_params}')
+
+    return dict_best_params
