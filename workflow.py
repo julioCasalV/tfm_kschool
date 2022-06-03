@@ -41,8 +41,6 @@ class Workflow():
         self.data_nr = normalize(data, self.factors_values)
 
         if file_factor_list is None:
-            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(self.data_nr[self.features_column], self.data_nr[self.predict_column], 
-                                                                test_size = 0.3, random_state=42)
             factor_list = {}
             factor_list['Latitud'] = [0.1,0.4,1]
             factor_list['Longitud'] = [0.1,0.4,1]
@@ -54,9 +52,9 @@ class Workflow():
                 self.factors_values.loc[column, "weight"] = self.factor_dict[column]
             self.data_nr = normalize(data, self.factors_values)
             pickle.dump(self.factors_values, open("factors_values.pyc", "wb"), protocol=pickle.HIGHEST_PROTOCOL)
-            
-        self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(self.data_nr[self.features_column], self.data_nr[self.predict_column], 
-                                                                test_size = 0.3, random_state=42)
+
+        self.X_train = self.data_nr[self.features_column]
+        self.y_train = self.data_nr[self.predict_column]
         self.model=KNeighborsRegressor(n_neighbors = self.n_neighbors, weights = 'distance', metric = 'euclidean', 
                                        algorithm = 'brute')
         self.model.fit(self.X_train,self.y_train)
